@@ -919,6 +919,18 @@ JL_DLLEXPORT int jl_task_spawn_multi(jl_task_t *task)
     return 0;
 }
 
+static void taskq_delete(jl_task_t **pnext, jl_task_t *tgt)
+{
+    jl_task_t *pt = *pnext;
+    while (pt) {
+        if (pt == tgt) {
+            *pnext = pt->next;
+            break;
+        }
+        pnext = &pt->next;
+        pt = *pnext;
+    }
+}
 
 /*  jl_task_sync() -- get the return value of task `t`
 
@@ -957,7 +969,13 @@ JL_DLLEXPORT jl_value_t *jl_task_sync(jl_task_t *task)
             }
 
             JL_UNLOCK(&task->cq.lock);
-            jl_task_yield(0);
+            JL_TRY {
+                jl_task_yield(0);
+            }
+            JL_CATCH {
+                taskq_delete(&task->cq.head, ptls->current_task);
+                jl_rethrow();
+            }
         }
 
         /* the task finished before we could add to its CQ */
@@ -1078,7 +1096,15 @@ JL_DLLEXPORT jl_value_t *jl_task_wait(jl_condition_t *c)
         jl_gc_wb(pt, pt->next);
     }
     JL_UNLOCK(&c->lock);
-    return jl_task_yield(0);
+    jl_value_t *val = NULL;
+    JL_TRY {
+        val = jl_task_yield(0);
+    }
+    JL_CATCH {
+        taskq_delete(&c->head, ptls->current_task);
+        jl_rethrow();
+    }
+    return val;
 }
 
 
