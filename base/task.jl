@@ -296,7 +296,8 @@ function task_done_hook(t::Task)
 
     if err && !handled
         if isa(result,InterruptException) && isdefined(Base,:active_repl_backend) &&
-            active_repl_backend.backend_task.state == :runnable && isempty(Workqueue) &&
+            active_repl_backend.backend_task.state == :runnable &&
+            #isempty(Workqueue) &&  # TODO
             active_repl_backend.in_eval
             throwto(active_repl_backend.backend_task, result) # this terminates the task
         end
