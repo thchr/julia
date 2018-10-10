@@ -276,21 +276,17 @@ end
     t = Timer(0) do t
         tc[] += 1
     end
-    @test isopen(t)
-    Base.process_events(false)
-    @test !isopen(t)
-    @test tc[] == 0
     yield()
+    @test !isopen(t)
     @test tc[] == 1
 
     tc = Ref(0)
-    t = Timer(0) do t
+    t = Timer(10) do t
         tc[] += 1
     end
     @test isopen(t)
     close(t)
     @test !isopen(t)
-    sleep(0.1)
     @test tc[] == 0
 
     tc = Ref(0)
