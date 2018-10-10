@@ -276,6 +276,7 @@ end
     t = Timer(0) do t
         tc[] += 1
     end
+    Base.process_events(false)
     yield()
     @test !isopen(t)
     @test tc[] == 1
