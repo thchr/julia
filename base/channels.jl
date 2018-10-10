@@ -433,7 +433,6 @@ if JULIA_PARTR
 
 function take_buffered(c::Channel)
     while true
-        check_channel_state(c)
         lock(c.lock)
         if length(c.data) > 0
             v = popfirst!(c.data)
@@ -442,6 +441,7 @@ function take_buffered(c::Channel)
             return v
         end
         unlock(c.lock)
+        check_channel_state(c)
         wait(c.cond_take)
     end
 end
