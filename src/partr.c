@@ -20,7 +20,6 @@ extern "C" {
 #ifdef JULIA_VALGRIND
 #include <valgrind/valgrind.h>
 #endif
-#include <sys/mman.h> // for mprotect
 
 // empirically, finish_task needs about 64k stack space to infer/run
 // and additionally, gc-stack reserves 64k for the guard pages

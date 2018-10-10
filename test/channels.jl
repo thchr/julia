@@ -47,7 +47,7 @@ end
     # Test multiple "for" loops waiting on the same channel which
     # is closed after adding a few elements.
     c = Channel(32)
-    results = Vector{Int}()
+    results = []
     @sync begin
         for i in 1:20
             @async for ii in c

@@ -269,6 +269,7 @@ macro async(expr)
     end
 end
 
+
 function register_taskdone_hook(t::Task, hook)
     tls = get_task_tls(t)
     push!(get!(tls, :TASKDONE_HOOKS, []), hook)
