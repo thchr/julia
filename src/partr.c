@@ -663,6 +663,9 @@ static int run_next(void)
         }
     } while (!task);
 
+    if (task == lastt)
+        return 1;
+
     // may need to allocate the task's stack
     int started = (task->stkbuf != NULL);
     if (!started)
@@ -671,17 +674,21 @@ static int run_next(void)
     sig_atomic_t defer_signal = ptls->defer_signal;
     int8_t gc_state = jl_gc_unsafe_enter(ptls);
 
+    jl_ucontext_t *lastt_ctx = NULL;
     int killed = (lastt->state == done_sym || lastt->state == failed_sym);
     if (killed) {
         lastt->gcstack = NULL;
         if (lastt->stkbuf)
             jl_release_task_stack(ptls, lastt);
     }
-    else
+    else {
+        lastt_ctx = &lastt->ctx;
+        lastt->current_tid = -1;
         lastt->gcstack = ptls->pgcstack;
+        lastt->world_age = ptls->world_age;
+    }
 
     // set up global state for new task
-    lastt->world_age = ptls->world_age;
     ptls->pgcstack = task->gcstack;
     ptls->world_age = task->world_age;
     task->gcstack = NULL;
@@ -689,22 +696,22 @@ static int run_next(void)
     task->current_tid = ptls->tid;
 
     if (!started)
-        jl_start_fiber(&lastt->ctx, &task->ctx);
+        jl_start_fiber(lastt_ctx, &task->ctx);
     else {
         if (killed)
             jl_set_fiber(&task->ctx);
         else
-            jl_swap_fiber(&lastt->ctx, &task->ctx);
+            jl_swap_fiber(lastt_ctx, &task->ctx);
     }
-
-    // TODO: add support for allowing any thread to run the event loop
-    if (ptls->tid == 0)
-        jl_process_events(jl_global_event_loop());
 
     jl_gc_unsafe_leave(ptls, gc_state);
     sig_atomic_t other_defer_signal = ptls->defer_signal;
     if (other_defer_signal  &&  !defer_signal)
         jl_sigint_safepoint(ptls);
+
+    // TODO: add support for allowing any thread to run the event loop
+    // if (ptls->tid == 0)
+    //    jl_process_events(jl_global_event_loop());
 
     return 1;
 }
@@ -1010,9 +1017,6 @@ JL_DLLEXPORT jl_value_t *jl_task_yield(int requeue)
 
     jl_task_t *ytask = ptls->current_task;
     if (ytask) {
-        if (ytask != ptls->root_task)
-            ytask->current_tid = -1;
-
 #ifdef ENABLE_TIMINGS
         blk = ytask->timing_stack;
         if (blk)
