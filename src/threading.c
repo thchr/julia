@@ -228,6 +228,7 @@ JL_DLLEXPORT JL_CONST_FUNC jl_ptls_t (jl_get_ptls_states)(void)
 
 JL_DLLEXPORT int jl_n_threads;
 jl_ptls_t *jl_all_tls_states;
+uint64_t jl_thread_sleep_threshold;
 
 // return calling thread's ID
 // Also update the suspended_threads list in signals-mach when changing the
@@ -432,6 +433,16 @@ void jl_init_threading(void)
         jl_n_threads = max_threads;
     if (jl_n_threads <= 0)
         jl_n_threads = 1;
+
+    // thread sleep threshold
+    jl_thread_sleep_threshold = DEFAULT_THREAD_SLEEP_THRESHOLD;
+    cp = getenv(THREAD_SLEEP_THRESHOLD_NAME);
+    if (cp) {
+        if (!strncasecmp(cp, "infinite", 8))
+            jl_thread_sleep_threshold = 0;
+        else
+            jl_thread_sleep_threshold = (uint64_t)strtol(cp, NULL, 10);
+    }
 
     jl_all_tls_states = (jl_ptls_t*)malloc(jl_n_threads * sizeof(void*));
 

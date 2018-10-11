@@ -37,7 +37,6 @@ typedef struct {
     // to let threads sleep
     uv_mutex_t alarm_lock;
     uv_cond_t  alarm;
-    uint64_t   sleep_threshold;
 } ti_threadgroup_t;
 
 // thread state
@@ -98,15 +97,6 @@ static int ti_threadgroup_create(uint8_t num_sockets, uint8_t num_cores,
     uv_mutex_init(&tg->alarm_lock);
     uv_cond_init(&tg->alarm);
 
-    tg->sleep_threshold = DEFAULT_THREAD_SLEEP_THRESHOLD;
-    cp = getenv(THREAD_SLEEP_THRESHOLD_NAME);
-    if (cp) {
-        if (!strncasecmp(cp, "infinite", 8))
-            tg->sleep_threshold = 0;
-        else
-            tg->sleep_threshold = (uint64_t)strtol(cp, NULL, 10);
-    }
-
     *newtg = tg;
     return 0;
 }
@@ -156,7 +146,7 @@ static int ti_threadgroup_fork(ti_threadgroup_t *tg, int16_t ext_tid, void **bca
         jl_atomic_store_release(group_sense, thread_sense);
 
         // if it's possible that threads are sleeping, signal them
-        if (tg->sleep_threshold) {
+        if (jl_thread_sleep_threshold) {
             uv_mutex_lock(&tg->alarm_lock);
             uv_cond_broadcast(&tg->alarm);
             uv_mutex_unlock(&tg->alarm_lock);
@@ -168,7 +158,7 @@ static int ti_threadgroup_fork(ti_threadgroup_t *tg, int16_t ext_tid, void **bca
         uint64_t spin_start = 0;
         // synchronize `tg->envelope` and `tg->group_sense`
         while (jl_atomic_load_acquire(group_sense) != thread_sense) {
-            if (tg->sleep_threshold) {
+            if (jl_thread_sleep_threshold) {
                 if (!spin_start) {
                     // Lazily initialize spin_start since uv_hrtime is expensive
                     spin_start = uv_hrtime();
@@ -176,7 +166,7 @@ static int ti_threadgroup_fork(ti_threadgroup_t *tg, int16_t ext_tid, void **bca
                 }
                 spin_ns = uv_hrtime() - spin_start;
                 // In case uv_hrtime is not monotonic, we'll sleep earlier
-                if (init || spin_ns >= tg->sleep_threshold) {
+                if (init || spin_ns >= jl_thread_sleep_threshold) {
                     uv_mutex_lock(&tg->alarm_lock);
                     if (jl_atomic_load_acquire(group_sense) != thread_sense) {
                         uv_cond_wait(&tg->alarm, &tg->alarm_lock);

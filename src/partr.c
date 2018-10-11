@@ -48,6 +48,9 @@ extern void jl_release_task_stack(jl_ptls_t ptls, jl_task_t *task);
 extern int jl_gc_mark_queue_obj_explicit(jl_gc_mark_cache_t *gc_cache,
                                          jl_gc_mark_sp_t *sp, jl_value_t *obj);
 
+// thread sleep threshold
+extern uint64_t jl_thread_sleep_threshold;
+
 // multiq
 // ---
 
@@ -71,6 +74,10 @@ static int16_t heap_p;
 
 /* unbias state for the RNG */
 static uint64_t cong_unbias;
+
+/* for thread sleeping */
+static uv_mutex_t sleep_lock;
+static uv_cond_t  sleep_alarm;
 
 
 /*  multiq_init()
@@ -394,6 +401,10 @@ void jl_init_threadinginfra(void)
 
     /* allocate sticky task queues */
     sticky_taskqs = (jl_taskq_t *)jl_malloc_aligned(jl_n_threads * sizeof(jl_taskq_t), 64);
+
+    /* initialize the sleep mechanism */
+    uv_mutex_init(&sleep_lock);
+    uv_cond_init(&sleep_alarm);
 }
 
 
@@ -477,7 +488,15 @@ static void enqueue_task(jl_task_t *task)
     else
         multiq_insert(task, task->prio);
 
+    /* stop the event loop */
     uv_stop(jl_global_event_loop());
+
+    /* wake up threads */
+    if (jl_thread_sleep_threshold) {
+        uv_mutex_lock(&sleep_lock);
+        uv_cond_broadcast(&sleep_alarm);
+        uv_mutex_unlock(&sleep_lock);
+    }
 }
 
 
@@ -619,49 +638,83 @@ void NOINLINE JL_NORETURN start_task(void)
 }
 
 
-// get the next available task and run it
+// get the next runnable task
+static jl_task_t *get_next_task(void)
+{
+    jl_ptls_t ptls = jl_get_ptls_states();
+    jl_task_t *task;
+
+    /* first check for sticky tasks */
+    JL_LOCK(&ptls->sticky_taskq->lock);
+    task = ptls->sticky_taskq->head;
+    if (task) {
+        ptls->sticky_taskq->head = task->next;
+        task->next = NULL;
+    }
+    JL_UNLOCK(&ptls->sticky_taskq->lock);
+
+    /* no sticky tasks, go to the multiq */
+    if (!task) {
+        task = multiq_deletemin();
+
+        if (task) {
+            /* a sticky task will only come out of the multiq if it has not been run */
+            if (task->settings & TASK_IS_STICKY) {
+                assert(task->sticky_tid == -1);
+                task->sticky_tid = ptls->tid;
+            }
+        }
+    }
+
+    return task;
+}
+
+
+// run the next available task
 static int run_next(void)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
     jl_task_t *task = NULL, *lastt = ptls->current_task;
 
-    /* TODO: threads should sleep after spinning for some time */
-    do {
-        /* first check for sticky tasks */
-        // TODO: fix this to round-robin through all sticky tasks
-        JL_LOCK(&ptls->sticky_taskq->lock);
-        task = ptls->sticky_taskq->head;
-        if (task) {
-            ptls->sticky_taskq->head = task->next;
-            task->next = NULL;
-        }
-        JL_UNLOCK(&ptls->sticky_taskq->lock);
-
-        /* no sticky tasks, go to the multiq */
-        if (!task) {
-            task = multiq_deletemin();
-
-            if (task) {
-                /* a sticky task will only come out of the multiq if it has not been run */
-                if (task->settings & TASK_IS_STICKY) {
-                    assert(task->sticky_tid == -1);
-                    task->sticky_tid = ptls->tid;
-                }
+    uint64_t spin_ns, spin_start = 0;
+    while (!task) {
+        if (jl_thread_sleep_threshold) {
+            if (spin_start == 0) {
+                spin_start = uv_hrtime();
+                continue;
             }
         }
 
+        task = get_next_task();
+
         if (!task) {
-            // TODO: add support for allowing any thread to run the libuv event loop
             if (ptls->tid == 0)
-                //TODO: can only make blocking call to libuv if we're sure there are no
-                //tasks in the multiqueue, AND there's a way to interrupt the call when
-                //a new task is added
-                //jl_run_once(jl_global_event_loop());
                 jl_process_events(jl_global_event_loop());
             else
                 jl_cpu_pause();
+
+            if (jl_thread_sleep_threshold) {
+                spin_ns = uv_hrtime() - spin_start;
+                if (spin_ns > jl_thread_sleep_threshold) {
+                    uv_mutex_lock(&sleep_lock);
+                    task = get_next_task();
+                    if (!task) {
+                        // thread 0 makes a blocking call to the event loop
+                        if (ptls->tid == 0) {
+                            uv_mutex_unlock(&sleep_lock);
+                            jl_run_once(jl_global_event_loop());
+                        }
+                        // other threads just sleep
+                        else {
+                            uv_cond_wait(&sleep_alarm, &sleep_lock);
+                            uv_mutex_unlock(&sleep_lock);
+                        }
+                    }
+                    spin_start = 0;
+                }
+            }
         }
-    } while (!task);
+    }
 
     if (task == lastt)
         return 1;
